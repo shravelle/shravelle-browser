@@ -2,8 +2,24 @@
   "name": "@shravelle/browser",
   "version": "1.0.0",
   "description": "Shravelle real user monitoring for React, Angular, Vue and plain HTML",
-  "main": "shravelle-browser.js",
+  "main": "dist/shravelle-browser.min.js",
+  "module": "dist/shravelle-browser.min.js",
+  "browser": "shravelle-browser.min.js",
+  "unpkg": "shravelle-browser.min.js",
+  "jsdelivr": "shravelle-browser.min.js",
   "types": "index.d.ts",
-  "files": ["shravelle-browser.js", "index.d.ts", "react.js", "angular.ts"],
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./dist/shravelle-browser.min.js" },
+    "./react": "./dist/react.min.js",
+    "./angular": "./dist/angular.min.js",
+    "./shravelle-browser.js": "./shravelle-browser.min.js"
+  },
+  "sideEffects": ["./shravelle-browser.min.js", "./dist/shravelle-browser.min.js"],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": { "esbuild": "^0.24.2" },
+  "files": ["shravelle-browser.min.js", "dist", "index.d.ts"],
   "license": "MIT"
 }

@@ -1,16 +1,23 @@
 # Browser SDK
 
-Files: `sdks/shravelle-sdk-browser/shravelle-browser.js` (no dependencies, also served by Shravelle at `/sdk/shravelle-browser.js`),
-`index.d.ts`, `react.js`, `angular.ts`. Feature overview: [features/browser-monitoring.md](https://shravelle.com/docs.html#browser).
+Published as an optimized, minified bundle — source is kept in this repo, but the
+package and the browser-served script ship built, not as readable source:
+
+- `shravelle-browser.min.js` — standalone, no dependencies; served by Shravelle at `/sdk/shravelle-browser.min.js`
+- `dist/shravelle-browser.min.js`, `dist/react.min.js`, `dist/angular.min.js` — minified ESM for bundlers
+- `index.d.ts` — TypeScript types
+
+Build (regenerate the minified files): `npm install && npm run build` (runs `build.mjs` with esbuild;
+also runs automatically on `npm publish`). Feature overview: [features/browser-monitoring.md](https://shravelle.com/docs.html#browser).
 
 ## Script tag
 ```html
-<script src="https://shravelle.example.com/sdk/shravelle-browser.js"></script>
+<script src="https://shravelle.example.com/sdk/shravelle-browser.min.js"></script>
 <script>Shravelle.init({ endpoint: "https://ingest.example.com", key: "shv_brw_xxx", app: "shop-web", release: "5.3.0" });</script>
 ```
 ## npm / bundlers
 ```js
-import Shravelle from "@shravelle/browser";      // sdks/shravelle-sdk-browser
+import Shravelle from "@shravelle/browser";      // resolves to dist/shravelle-browser.min.js
 Shravelle.init({ endpoint: ["https://ingest-1.example.com", "https://ingest-2.example.com"], key: "shv_brw_xxx", app: "shop-web" });
 ```
 ## React
@@ -30,7 +37,7 @@ providers: [{ provide: ErrorHandler, useClass: ShravelleErrorHandler }]
 | Option | Default | |
 |---|---|---|
 | `endpoint` | – | URL or array of URLs (failover) |
-| `key` | – | browser key |
+| `key` | – | browser key (`shv_brw_...`, send-only) |
 | `app`, `release` | | |
 | `sampleRate` | 1 | share of sessions recorded |
 | `flushInterval` | 5000 | ms |
