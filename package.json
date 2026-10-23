@@ -1,0 +1,9 @@
+{
+  "name": "@shravelle/browser",
+  "version": "1.0.0",
+  "description": "Shravelle real user monitoring for React, Angular, Vue and plain HTML",
+  "main": "shravelle-browser.js",
+  "types": "index.d.ts",
+  "files": ["shravelle-browser.js", "index.d.ts", "react.js", "angular.ts"],
+  "license": "MIT"
+}
