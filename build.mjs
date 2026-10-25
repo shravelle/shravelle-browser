@@ -16,7 +16,7 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url)))
 const banner = { js: `/*! Shravelle Browser SDK v${pkg.version} | (c) Shravelle | MIT | https://shravelle.com */` };
 const common = { bundle: true, minify: true, legalComments: "none", banner, logLevel: "info" };
 
-await build({ ...common, entryPoints: ["shravelle-browser.js"], outfile: "shravelle-browser.min.js", format: "iife", target: ["es2017"] });
-await build({ ...common, entryPoints: ["shravelle-browser.js"], outfile: "dist/shravelle-browser.min.js", format: "esm", target: ["es2019"] });
-await build({ ...common, entryPoints: ["react.js"], outfile: "dist/react.min.js", format: "esm", target: ["es2019"], external: ["react"] });
-await build({ ...common, entryPoints: ["angular.ts"], outfile: "dist/angular.min.js", format: "esm", target: ["es2019"], external: ["@angular/core"] });
+await build({ ...common, entryPoints: ["shravelle-browser.js"], outfile: "shravelle-browser.min.js", format: "iife", target: ["es2015"] });
+await build({ ...common, entryPoints: ["shravelle-browser.js"], outfile: "dist/shravelle-browser.min.js", format: "esm", target: ["es2015"] });
+await build({ ...common, entryPoints: ["react.js"], outfile: "dist/react.min.js", format: "esm", target: ["es2015"], external: ["react"] });
+await build({ ...common, entryPoints: ["angular.ts"], outfile: "dist/angular.min.js", format: "esm", target: ["es2015"], external: ["@angular/core"] });
