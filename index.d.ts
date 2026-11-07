@@ -10,6 +10,16 @@ export interface ShravelleConfig {
   captureClicks?: boolean;
   captureAjax?: boolean;
   beforeSend?: (event: Record<string, unknown>) => Record<string, unknown> | null;
+  /** Record sessions for replay (default false). Text and inputs are masked by default. */
+  sessionReplay?: boolean;
+  /** Share of sampled sessions that are recorded, 0..1 (default 1). */
+  replaySampleRate?: number;
+  /** Mask all page text unless inside [data-shravelle-unmask] (default true). */
+  replayMaskText?: boolean;
+  /** Mask form inputs (default true). Password, card, OTP and similar fields are always masked. */
+  replayMaskInputs?: boolean;
+  /** How often recording chunks are sent, in ms (default 10000). */
+  replayFlushInterval?: number;
 }
 declare const Shravelle: {
   init(config: ShravelleConfig): void;

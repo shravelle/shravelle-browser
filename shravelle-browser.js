@@ -11,7 +11,8 @@
  * Collects: page views (incl. SPA route changes), Core Web Vitals (LCP, INP,
  * CLS, FCP, TTFB), JavaScript errors and unhandled promise rejections,
  * fetch/XHR calls (with W3C traceparent injection to link browser and
- * backend traces), click breadcrumbs and custom events.
+ * backend traces), click breadcrumbs and custom events, and (opt-in, privacy
+ * masked) session replay recordings: Shravelle.init({ ..., sessionReplay: true }).
  *
  * No data is lost on flaky networks: events are queued in memory, mirrored
  * to localStorage, flushed with sendBeacon when the page is hidden, and
@@ -22,7 +23,8 @@
   if (global.Shravelle && global.Shravelle.__loaded) return;
 
   var cfg = { endpoint: "", key: "", app: "web", release: "", sampleRate: 1, flushInterval: 5000, maxBatch: 100,
-              tracePropagationTargets: [], captureClicks: true, captureAjax: true, beforeSend: null };
+              tracePropagationTargets: [], captureClicks: true, captureAjax: true, beforeSend: null,
+              sessionReplay: false, replaySampleRate: 1, replayMaskText: true, replayMaskInputs: true };
   var queue = [], userId = "", sessionId = "", started = false, sampled = true, retryDelay = 2000;
   var STORE = "__shravelle_q", SESSION = "__shravelle_s", MAX_STORED = 2000;
 
@@ -209,6 +211,132 @@
     }), true);
   }
 
+  // ---- session replay (opt-in: sessionReplay: true) ----------------------------------
+  // Records the page as a DOM snapshot plus changes (mutations, scrolls, inputs, mouse)
+  // and sends it in chunks to /v1/replay. Privacy by default: all text is masked
+  // ("*") unless an element (or an ancestor) has data-shravelle-unmask; form inputs
+  // are always masked (passwords, card and similar fields are never recorded, even
+  // unmasked); elements with data-shravelle-block are replaced by an empty box;
+  // scripts and event handler attributes are never recorded.
+  var R = { on: false, ids: null, next: 1, buf: [], size: 0, seq: 0, start: 0, clicks: 0, rage: 0, err: false, lastClicks: [], timer: 0 };
+  var RSTATE = "__shravelle_r", REPLAY_CHUNK = 300000;
+  function rid(n) { var i = R.ids.get(n); if (!i) { i = R.next++; R.ids.set(n, i); } return i; }
+  function blocked(el) { return el.closest && el.closest("[data-shravelle-block]"); }
+  function unmasked(el) { return !!(el && el.closest && el.closest("[data-shravelle-unmask]")); }
+  function maskText(s, el) { return (cfg.replayMaskText !== false && !unmasked(el)) ? String(s).replace(/\S/g, "*") : String(s); }
+  function sensitive(el) {
+    var t = (el.type || "").toLowerCase(), ac = (el.getAttribute && el.getAttribute("autocomplete") || "").toLowerCase();
+    return t === "password" || /cc-|card|cvc|cvv|one-time-code|new-password|current-password/.test(ac) || /card|cvv|cvc|pass|otp|pin|aadhaar|pan/i.test((el.name || "") + " " + (el.id || ""));
+  }
+  function inputValue(el) {
+    var t = (el.type || "").toLowerCase();
+    if (t === "checkbox" || t === "radio") return el.checked ? "1" : "0";
+    if (sensitive(el) || cfg.replayMaskInputs !== false || !unmasked(el)) return String(el.value || "").replace(/./g, "*");
+    return String(el.value || "");
+  }
+  function absUrl(u) { try { return new URL(u, location.href).href; } catch (e) { return ""; } }
+  function cleanAttrs(el) {
+    var out = {}, tag = el.tagName.toLowerCase();
+    for (var i = 0; i < el.attributes.length; i++) {
+      var a = el.attributes[i], n = a.name.toLowerCase(), v = a.value;
+      if (n.indexOf("on") === 0 || n === "srcdoc" || n === "nonce" || n === "integrity") continue;
+      if (/^\s*javascript:/i.test(v)) continue;
+      if (n === "value" && (tag === "input" || tag === "textarea" || tag === "option")) continue;
+      if (n === "src" || n === "href" || n === "poster" || n === "action") v = absUrl(v);
+      if (n === "srcset") v = v.split(",").map(function (p) { var s = p.trim().split(/\s+/); s[0] = absUrl(s[0]); return s.join(" "); }).join(", ");
+      if ((n === "placeholder" || n === "title" || n === "alt" || n === "aria-label") && cfg.replayMaskText !== false && !unmasked(el)) v = maskText(v, el);
+      out[n] = v;
+    }
+    if (tag === "input" || tag === "textarea" || tag === "select") out.__v = inputValue(el);
+    if (tag === "iframe") delete out.src;
+    return out;
+  }
+  function inlineSheet(el) {
+    try { var rules = el.sheet && el.sheet.cssRules; if (!rules) return null; var s = ""; for (var i = 0; i < rules.length; i++) s += rules[i].cssText + "\n"; return s; } catch (e) { return null; }
+  }
+  function ser(n) {
+    if (n.nodeType === 3) {
+      var p = n.parentNode, ptag = p && p.tagName ? p.tagName.toLowerCase() : "";
+      return { i: rid(n), y: 3, x: ptag === "style" ? n.nodeValue : maskText(n.nodeValue, p) };
+    }
+    if (n.nodeType !== 1) return null;
+    var tag = n.tagName.toLowerCase();
+    if (tag === "script" || tag === "noscript" || (tag === "link" && /preload|prefetch|modulepreload/i.test(n.rel || ""))) return null;
+    if (blocked(n)) { var r = n.getBoundingClientRect(); return { i: rid(n), y: 1, t: "div", a: { style: "width:" + r.width + "px;height:" + r.height + "px;background:#e5e7eb", "data-shravelle-block": "" }, c: [] }; }
+    if (tag === "link" && /stylesheet/i.test(n.rel || "")) { var css = inlineSheet(n); if (css != null) return { i: rid(n), y: 1, t: "style", a: {}, c: [{ i: rid(document.createTextNode("")), y: 3, x: css }] }; }
+    var o = { i: rid(n), y: 1, t: tag, a: cleanAttrs(n), c: [] };
+    if (n.namespaceURI === "http://www.w3.org/2000/svg") o.s = 1;
+    if (tag === "style") { var cs = inlineSheet(n); if (cs != null && !n.textContent) o.c.push({ i: R.next++, y: 3, x: cs }); }
+    for (var c = n.firstChild; c; c = c.nextSibling) { var s = ser(c); if (s) o.c.push(s); }
+    return o;
+  }
+  function rec(ev) {
+    if (!R.on) return;
+    ev.t = Date.now();
+    if (!R.start) R.start = ev.t;
+    var s = JSON.stringify(ev); R.buf.push(s); R.size += s.length;
+    if (R.size > REPLAY_CHUNK) flushReplay(false);
+  }
+  function snapshot() {
+    R.ids = new WeakMap(); R.next = 1;
+    rec({ k: "full", w: innerWidth, h: innerHeight, url: location.href, d: document.doctype ? document.doctype.name : "html", n: ser(document.documentElement), sx: scrollX, sy: scrollY });
+  }
+  function replayUrl() { var e = endpoints(); return String(e[epIndex % e.length]).replace(/\/$/, "") + "/v1/replay?key=" + encodeURIComponent(cfg.key); }
+  function flushReplay(unloading) {
+    if (!R.buf.length) return;
+    var events = "[" + R.buf.join(",") + "]", body = JSON.stringify({ app: cfg.app, session_id: sessionId, user_id: userId, seq: R.seq, start: R.start, end: Date.now(),
+      page_url: location.href, has_error: R.err, clicks: R.clicks, rage_clicks: R.rage }).replace(/}$/, ',"events":' + events + "}");
+    R.seq++; R.buf = []; R.size = 0; R.start = 0; R.clicks = 0; R.rage = 0; R.err = false;
+    try { localStorage.setItem(RSTATE, JSON.stringify({ s: sessionId, q: R.seq })); } catch (e) {}
+    if (unloading && body.length < 60000 && navigator.sendBeacon) { navigator.sendBeacon(replayUrl(), new Blob([body], { type: "text/plain" })); return; }
+    try { fetch(replayUrl(), { method: "POST", body: body, keepalive: unloading && body.length < 60000, headers: { "Content-Type": "text/plain" } }).catch(function () {}); } catch (e) {}
+  }
+  function startReplay() {
+    if (!global.MutationObserver || !global.WeakMap || !global.JSON) return;
+    var rate = cfg.replaySampleRate == null ? 1 : cfg.replaySampleRate;
+    if (parseInt(sessionId.slice(8, 16), 16) / 0xffffffff >= rate) return;
+    try { var st = JSON.parse(localStorage.getItem(RSTATE) || "{}"); if (st.s === sessionId) R.seq = st.q || 0; } catch (e) {}
+    R.on = true;
+    snapshot();
+    new MutationObserver(safe(function (ms) {
+      var adds = [], rems = [], attrs = [], texts = [], seen = new Set();
+      ms.forEach(function (m) {
+        if (m.type === "childList") {
+          m.removedNodes.forEach(function (n) { var i = R.ids.get(n); if (i) rems.push({ i: i, p: R.ids.get(m.target) }); });
+          m.addedNodes.forEach(function (n) {
+            if (seen.has(n) || !n.isConnected) return; seen.add(n);
+            var s = ser(n); if (!s) return;
+            var nx = n.nextSibling; while (nx && !R.ids.get(nx)) nx = nx.nextSibling;
+            adds.push({ p: rid(m.target), nx: nx ? R.ids.get(nx) : 0, n: s });
+          });
+        } else if (m.type === "attributes") {
+          var el = m.target, i = R.ids.get(el); if (!i || !el.getAttribute) return;
+          var a = {}, all = cleanAttrs(el), nm = m.attributeName.toLowerCase(); a[nm] = all.hasOwnProperty(nm) ? all[nm] : null; attrs.push({ i: i, a: a });
+        } else if (m.type === "characterData") {
+          var ti = R.ids.get(m.target); if (ti) texts.push({ i: ti, x: maskText(m.target.nodeValue, m.target.parentNode) });
+        }
+      });
+      if (adds.length || rems.length || attrs.length || texts.length) rec({ k: "m", ad: adds, rm: rems, at: attrs, tx: texts });
+    })).observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+    var lastMove = 0;
+    addEventListener("mousemove", safe(function (e) { var t = Date.now(); if (t - lastMove < 60) return; lastMove = t; rec({ k: "mv", x: e.clientX, y: e.clientY }); }), { passive: true, capture: true });
+    addEventListener("click", safe(function (e) {
+      var t = Date.now(); R.clicks++;
+      R.lastClicks = R.lastClicks.filter(function (c) { return t - c.t < 1000 && Math.abs(c.x - e.clientX) < 30 && Math.abs(c.y - e.clientY) < 30; });
+      R.lastClicks.push({ t: t, x: e.clientX, y: e.clientY });
+      var rage = R.lastClicks.length === 3; if (rage) R.rage++;
+      rec({ k: "c", x: e.clientX, y: e.clientY, i: e.target && R.ids.get(e.target) || 0, r: rage ? 1 : 0 });
+    }), true);
+    addEventListener("scroll", safe(function (e) { var tg = e.target === document ? null : e.target; rec({ k: "s", i: tg ? R.ids.get(tg) || 0 : 0, x: tg ? tg.scrollLeft : scrollX, y: tg ? tg.scrollTop : scrollY }); }), { passive: true, capture: true });
+    addEventListener("input", safe(function (e) { var el = e.target, i = R.ids.get(el); if (i && "value" in el) rec({ k: "i", i: i, v: inputValue(el) }); }), true);
+    addEventListener("change", safe(function (e) { var el = e.target, i = R.ids.get(el); if (i && "value" in el) rec({ k: "i", i: i, v: inputValue(el) }); }), true);
+    addEventListener("resize", safe(function () { rec({ k: "vp", w: innerWidth, h: innerHeight }); }));
+    addEventListener("error", function () { R.err = true; rec({ k: "e" }); }, true);
+    R.timer = setInterval(safe(function () { flushReplay(false); }), cfg.replayFlushInterval || 10000);
+    addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden") flushReplay(true); });
+    addEventListener("pagehide", function () { flushReplay(true); });
+  }
+
   var Shravelle = {
     __loaded: true,
     init: safe(function (opts) {
@@ -223,6 +351,8 @@
       errors(); vitals(); patchHistory();
       if (cfg.captureAjax) ajax();
       if (cfg.captureClicks) clicks();
+      // the first snapshot needs the parsed page (init usually runs in <head>)
+      if (cfg.sessionReplay && sampled) { if (document.readyState === "loading") addEventListener("DOMContentLoaded", safe(startReplay)); else startReplay(); }
       if (document.readyState === "complete") pageView("initial");
       else addEventListener("load", safe(function () { setTimeout(function () { pageView("initial"); }, 0); }));
       setInterval(safe(function () { flush(); }), cfg.flushInterval);
