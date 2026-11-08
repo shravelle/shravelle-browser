@@ -24,7 +24,8 @@
 
   var cfg = { endpoint: "", key: "", app: "web", release: "", sampleRate: 1, flushInterval: 5000, maxBatch: 100,
               tracePropagationTargets: [], captureClicks: true, captureAjax: true, beforeSend: null,
-              sessionReplay: false, replaySampleRate: 1, replayMaskText: true, replayMaskInputs: true };
+              sessionReplay: false, replaySampleRate: 1, replayMaskText: true, replayMaskInputs: true,
+              flags: false, flagsEnvironment: "", userAttributes: {} };
   var queue = [], userId = "", sessionId = "", started = false, sampled = true, retryDelay = 2000;
   var STORE = "__shravelle_q", SESSION = "__shravelle_s", MAX_STORED = 2000;
 
@@ -337,6 +338,41 @@
     addEventListener("pagehide", function () { flushReplay(true); });
   }
 
+  // ---- feature flags (flags: true) ---------------------------------------------------
+  // Definitions come from GET /v1/flags and are evaluated here, so checking a
+  // flag never waits on the network. Same algorithm as the server (FNV-1a
+  // bucket of flagKey + "\0" + user key), so a user always gets the same variant.
+  var F = { defs: {}, loaded: false, seen: {}, waiters: [] };
+  function fnvBucket(str) {
+    var bytes = unescape(encodeURIComponent(str)), h = 0x811c9dc5;
+    for (var i = 0; i < bytes.length; i++) { h ^= bytes.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h % 100;
+  }
+  function flagUser() { return userId || sessionId; }
+  function evalFlag(f, attrs) {
+    var off = f.variants[f.variants.length - 1];
+    if (!f.enabled) return off;
+    for (var i = 0; i < (f.rules || []).length; i++) {
+      var r = f.rules[i], v = (r.attribute === "key" || r.attribute === "user_id") ? flagUser() : (attrs[r.attribute] == null ? "" : String(attrs[r.attribute]));
+      var hit = false;
+      if (r.op === "in" || r.op === "not_in") { hit = r.values.indexOf(v) >= 0; if (r.op === "not_in") hit = !hit; }
+      else if (r.op === "contains") hit = !!v && r.values.some(function (x) { return v.indexOf(x) >= 0; });
+      else if (r.op === "starts_with") hit = !!v && r.values.some(function (x) { return v.indexOf(x) === 0; });
+      if (hit) return r.variant;
+    }
+    return fnvBucket(f.key + "\u0000" + flagUser()) < f.rollout_percent ? f.variants[0] : off;
+  }
+  function loadFlags() {
+    var e = endpoints(), u = String(e[epIndex % e.length]).replace(/\/$/, "") + "/v1/flags?key=" + encodeURIComponent(cfg.key) + (cfg.flagsEnvironment ? "&env=" + encodeURIComponent(cfg.flagsEnvironment) : "");
+    fetch(u).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d) return;
+      var m = {}; (d.flags || []).forEach(function (f) { m[f.key] = f; }); F.defs = m; F.loaded = true;
+      try { localStorage.setItem("__shravelle_f", JSON.stringify(m)); } catch (x) {}
+      var w = F.waiters; F.waiters = []; w.forEach(function (fn) { safe(fn)(); });
+      setTimeout(loadFlags, Math.max(15, d.ttl || 60) * 1000);
+    }, function () { setTimeout(loadFlags, 60000); });
+  }
+
   var Shravelle = {
     __loaded: true,
     init: safe(function (opts) {
@@ -352,6 +388,10 @@
       if (cfg.captureAjax) ajax();
       if (cfg.captureClicks) clicks();
       // the first snapshot needs the parsed page (init usually runs in <head>)
+      if (cfg.flags) {
+        try { F.defs = JSON.parse(localStorage.getItem("__shravelle_f") || "{}"); F.loaded = Object.keys(F.defs).length > 0; } catch (e) {}
+        loadFlags();
+      }
       if (cfg.sessionReplay && sampled) { if (document.readyState === "loading") addEventListener("DOMContentLoaded", safe(startReplay)); else startReplay(); }
       if (document.readyState === "complete") pageView("initial");
       else addEventListener("load", safe(function () { setTimeout(function () { pageView("initial"); }, 0); }));
@@ -366,7 +406,22 @@
       err = err || {};
       push({ type: "js_error", name: err.name || "Error", message: err.message || String(err), stack: err.stack || "", attributes: attributes || {} });
     }),
-    flush: function () { flush(); }
+    flush: function () { flush(); },
+    // Shravelle.flag("new-checkout", "off", { country: "IN" }) -> "on" | "off" | other variant.
+    // Returns the fallback until definitions have loaded (use onFlagsReady to wait).
+    flag: function (key, fallback, attributes) {
+      var f = F.defs[key];
+      if (!f || !f.variants || f.variants.length < 2) return fallback;
+      var attrs = {}, k;
+      for (k in cfg.userAttributes) attrs[k] = cfg.userAttributes[k];
+      for (k in (attributes || {})) attrs[k] = attributes[k];
+      var v;
+      try { v = evalFlag(f, attrs); } catch (e) { return fallback; }
+      if (started && F.seen[key] !== v) { F.seen[key] = v; push({ type: "custom", name: "flag_evaluated", message: key, attributes: { flag: key, variant: v } }); }
+      return v;
+    },
+    onFlagsReady: function (fn) { if (F.loaded) safe(fn)(); else F.waiters.push(fn); },
+    setUserAttributes: function (a) { cfg.userAttributes = a || {}; }
   };
   global.Shravelle = Shravelle;
   if (typeof module !== "undefined" && module.exports) module.exports = Shravelle;
