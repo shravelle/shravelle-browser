@@ -20,6 +20,12 @@ export interface ShravelleConfig {
   replayMaskInputs?: boolean;
   /** How often recording chunks are sent, in ms (default 10000). */
   replayFlushInterval?: number;
+  /** Load feature flags from Shravelle (default false). Check them with Shravelle.flag(). */
+  flags?: boolean;
+  /** Only flags for this environment (when the browser key is not bound to one). */
+  flagsEnvironment?: string;
+  /** Attributes used by flag targeting rules, e.g. { country: "IN", plan: "pro" }. */
+  userAttributes?: Record<string, string>;
 }
 declare const Shravelle: {
   init(config: ShravelleConfig): void;
@@ -27,5 +33,11 @@ declare const Shravelle: {
   track(name: string, attributes?: Record<string, string>, value?: number): void;
   error(err: unknown, attributes?: Record<string, string>): void;
   flush(): void;
+  /** The variant of a feature flag for the current user ("on"/"off" or a custom variant); `fallback` until flags have loaded. */
+  flag(key: string, fallback: string, attributes?: Record<string, string>): string;
+  /** Runs `fn` once flag definitions are available. */
+  onFlagsReady(fn: () => void): void;
+  /** Attributes for flag targeting rules (country, plan, …). */
+  setUserAttributes(attributes: Record<string, string>): void;
 };
 export default Shravelle;
